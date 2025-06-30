@@ -1,4 +1,4 @@
-// ConfigSynchronizer.cpp - Raspberry Pi版
+// ConfigSynchronizer.cpp - Raspberry Pi版 (修正版)
 //
 // 目的:
 // 1. config.ini ファイルを読み込む
@@ -34,13 +34,14 @@
 // iniparserライブラリ（Raspberry Piで利用可能）
 // libiniparser-devはヘッダをサブディレクトリにインストールするため、パスを修正
 #include <iniparser/iniparser.h>
+
 // グローバル変数: 設定データと、スレッドセーフなアクセスのためのミューテックス
 std::map<std::string, std::map<std::string, std::string>> g_config_data;
 std::mutex g_config_mutex;
 std::atomic<bool> g_shutdown_flag{false};
 
 /**
- * @brief iniファイルから設定を読み込む
+ * @brief iniファイルから設定を読み込む (修正版)
  * @param filename config.iniのパス
  * @return 読み込みが成功した場合はtrue
  */
@@ -54,25 +55,34 @@ bool load_config(const std::string& filename) {
     std::lock_guard<std::mutex> lock(g_config_mutex);
     g_config_data.clear();
 
-    // 辞書内のすべてのキーを反復処理する
-    int n_keys = iniparser_getndict(ini);
-    for (int i = 0; i < n_keys; i++) {
-        const char* full_key = iniparser_getkey(ini, nullptr, i);
-        if (full_key == nullptr) {
+    // セクション数を取得
+    int n_sections = iniparser_getnsec(ini);
+    
+    for (int i = 0; i < n_sections; i++) {
+        const char* section_name = iniparser_getsecname(ini, i);
+        if (section_name == nullptr) {
             continue;
         }
-
-        // iniparserはキーを "section:key" の形式で返すため、これを分割する
-        std::string full_key_str(full_key);
-        size_t colon_pos = full_key_str.find(':');
-        if (colon_pos == std::string::npos) {
-            continue; // セクションがないキーは無視
+        
+        std::string section(section_name);
+        
+        // このセクション内のキーを取得するため、全キーを走査
+        // iniparserの古いバージョンでは、事前定義されたキーを読む必要がある
+        // 一般的な設定項目を試す
+        std::vector<std::string> common_keys = {
+            "WPF_HOST", "WPF_RECV_PORT", "CPP_RECV_PORT",
+            "PWM_MIN", "PWM_NEUTRAL", "PWM_NORMAL_MAX", "PWM_BOOST_MAX", "PWM_FREQUENCY",
+            "DEADZONE",
+            "CHANNEL", "ON_VALUE", "OFF_VALUE"
+        };
+        
+        for (const std::string& key : common_keys) {
+            std::string full_key = section + ":" + key;
+            const char* value = iniparser_getstring(ini, full_key.c_str(), nullptr);
+            if (value != nullptr) {
+                g_config_data[section][key] = std::string(value);
+            }
         }
-
-        std::string section = full_key_str.substr(0, colon_pos);
-        std::string key = full_key_str.substr(colon_pos + 1);
-        const char* value = iniparser_getstring(ini, full_key, "");
-        g_config_data[section][key] = std::string(value);
     }
 
     iniparser_freedict(ini);
