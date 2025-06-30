@@ -32,8 +32,8 @@
 #include <cstring>
 
 // iniparserライブラリ（Raspberry Piで利用可能）
-#include <iniparser.h>
-
+// libiniparser-devはヘッダをサブディレクトリにインストールするため、パスを修正
+#include <iniparser/iniparser.h>
 // グローバル変数: 設定データと、スレッドセーフなアクセスのためのミューテックス
 std::map<std::string, std::map<std::string, std::string>> g_config_data;
 std::mutex g_config_mutex;
@@ -109,13 +109,17 @@ std::string get_config_value(const std::string& section, const std::string& key,
 std::string serialize_config() {
     std::lock_guard<std::mutex> lock(g_config_mutex);
     std::stringstream ss;
+    std::stringstream content_ss;
     for (const auto& section_pair : g_config_data) {
         for (const auto& key_value_pair : section_pair.second) {
             // フォーマット: [SECTION]KEY=VALUE\n
-            ss << "[" << section_pair.first << "]"
+            content_ss << "[" << section_pair.first << "]"
                << key_value_pair.first << "=" << key_value_pair.second << "\n";
         }
     }
+    // 確実なTCP通信のため、[メッセージ長]\n[メッセージ本体] という形式で送信する
+    std::string content = content_ss.str();
+    ss << content.length() << "\n" << content;
     return ss.str();
 }
 
@@ -196,13 +200,22 @@ void send_config_to_wpf() {
     std::cout << "WPFアプリケーションに接続しました。設定を送信します...\n";
     std::string config_str = serialize_config();
     
-    ssize_t bytes_sent = send(sock, config_str.c_str(), config_str.length(), 0);
-    if (bytes_sent < 0) {
-        std::cerr << "エラー: データ送信に失敗しました。 " << strerror(errno) << std::endl;
-    } else {
-        std::cout << "設定を送信しました（" << bytes_sent << " バイト）\n";
+    // 全てのデータが送信されるまでループする
+    ssize_t total_sent = 0;
+    const char* data_ptr = config_str.c_str();
+    size_t data_len = config_str.length();
+
+    while (total_sent < (ssize_t)data_len) {
+        ssize_t bytes_sent = send(sock, data_ptr + total_sent, data_len - total_sent, 0);
+        if (bytes_sent < 0) {
+            std::cerr << "エラー: データ送信に失敗しました。 " << strerror(errno) << std::endl;
+            close(sock);
+            return;
+        }
+        total_sent += bytes_sent;
     }
 
+    std::cout << "設定を送信しました（" << total_sent << " バイト）\n";
     close(sock);
     std::cout << "接続を閉じました。\n";
 }
@@ -210,6 +223,8 @@ void send_config_to_wpf() {
 /**
  * @brief WPFからの設定更新を待ち受けるサーバーとして動作する (別スレッドで実行)
  */
+void handle_client_connection(int client_sock); // プロトタイプ宣言
+
 void receive_config_updates() {
     std::string port_str = get_config_value("CONFIG_SYNC", "CPP_RECV_PORT", "12348");
     
@@ -286,22 +301,62 @@ void receive_config_updates() {
                 continue;
             }
 
-            char recv_buf[4096];
-            ssize_t bytes_received = recv(client_sock, recv_buf, sizeof(recv_buf) - 1, 0);
-            if (bytes_received > 0) {
-                recv_buf[bytes_received] = '\0';
-                std::cout << "\nWPFから設定データを受信しました（" << bytes_received << " バイト）\n";
-                update_config_from_string(std::string(recv_buf));
-            } else if (bytes_received < 0) {
-                std::cerr << "エラー: データ受信に失敗しました。 " << strerror(errno) << std::endl;
-            }
-
-            close(client_sock);
+            // 接続処理を別関数に委譲
+            handle_client_connection(client_sock);
         }
     }
 
     close(listen_sock);
     std::cout << "設定更新受信スレッドを終了しました。\n";
+}
+
+/**
+ * @brief クライアントからの接続を処理し、完全なメッセージを受信する
+ * @param client_sock クライアントのソケットディスクリプタ
+ */
+void handle_client_connection(int client_sock) {
+    // 1. ヘッダー（メッセージ長）を改行まで読み込む
+    std::string header;
+    char c;
+    while (recv(client_sock, &c, 1, 0) > 0) {
+        if (c == '\n') {
+            break;
+        }
+        header += c;
+    }
+
+    if (header.empty()) {
+        close(client_sock);
+        return;
+    }
+
+    // 2. メッセージ長をパースし、その長さのデータを受信する
+    try {
+        size_t expected_length = std::stoull(header);
+        std::string received_data;
+        received_data.reserve(expected_length);
+        
+        std::vector<char> buffer(4096);
+        size_t total_received = 0;
+
+        while (total_received < expected_length) {
+            size_t to_read = std::min(buffer.size(), expected_length - total_received);
+            ssize_t bytes_received = recv(client_sock, buffer.data(), to_read, 0);
+            if (bytes_received <= 0) {
+                std::cerr << "エラー: データ受信中に接続が切れました。" << std::endl;
+                close(client_sock);
+                return;
+            }
+            received_data.append(buffer.data(), bytes_received);
+            total_received += bytes_received;
+        }
+        
+        std::cout << "\nWPFから設定データを受信しました（" << total_received << " バイト）\n";
+        update_config_from_string(received_data);
+    } catch (const std::exception& e) {
+        std::cerr << "エラー: 不正なメッセージ長ヘッダー: " << header << std::endl;
+    }
+    close(client_sock);
 }
 
 /**
