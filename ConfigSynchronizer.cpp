@@ -420,7 +420,7 @@ int main(int argc, char* argv[]) {
     std::cout << "コマンド:\n";
     std::cout << "  Enter: 現在設定を再送信\n";
     std::cout << "  s: 設定を表示\n";
-    std::cout << "  w: 設定をファイルに保存\n";
+    std::cout << "  w: 現在の設定を " << config_path << " に上書き保存\n";
     std::cout << "  q: 終了\n";
 
     // メインスレッドでは、他の処理を実行できる
@@ -434,7 +434,7 @@ int main(int argc, char* argv[]) {
         } else if (line == "s") {
             print_current_config();
         } else if (line == "w") {
-            save_config(config_path + ".backup");
+            save_config(config_path);
         } else {
             std::cout << "現在の設定をWPFに再送信します。\n";
             send_config_to_wpf();
