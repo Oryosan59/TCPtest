@@ -275,19 +275,60 @@ void send_config_to_wpf() {
         return;
     }
 
-    std::cout << "WPFアプリケーション(" << host << ":" << port << ")に接続を試行中...\n";
-    
-    if (connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        std::cerr << "エラー: WPFアプリケーション(" << host << ":" << port << ")に接続できませんでした。 " 
-                  << strerror(errno) << std::endl;
+    // ソケットをノンブロッキングモードに設定
+    if (!set_socket_non_blocking(sock, true)) {
+        std::cerr << "エラー: ソケットをノンブロッキングモードに設定できませんでした。\n";
         close(sock);
         return;
     }
 
+    std::cout << "WPFアプリケーション(" << host << ":" << port << ")に接続を試行中...\n";
+    
+    int ret = connect(sock, (struct sockaddr*)&server_addr, sizeof(server_addr));
+    if (ret < 0) {
+        if (errno == EINPROGRESS) {
+            // ノンブロッキング接続が進行中。select()で完了を待つ
+            fd_set writefds;
+            FD_ZERO(&writefds);
+            FD_SET(sock, &writefds);
+
+            // 接続タイムアウトを設定
+            struct timeval connect_timeout;
+            connect_timeout.tv_sec = 5;
+            connect_timeout.tv_usec = 0;
+
+            int activity = select(sock + 1, nullptr, &writefds, nullptr, &connect_timeout);
+            if (activity > 0) {
+                // ソケットが書き込み可能になった。接続結果を確認する
+                int so_error;
+                socklen_t len = sizeof(so_error);
+                getsockopt(sock, SOL_SOCKET, SO_ERROR, &so_error, &len);
+                if (so_error != 0) {
+                    std::cerr << "エラー: WPFアプリケーション(" << host << ":" << port << ")に接続できませんでした。 " 
+                              << strerror(so_error) << std::endl;
+                    close(sock);
+                    return;
+                }
+                // 接続成功
+            } else {
+                // select()が0を返した場合はタイムアウト、-1の場合はエラー
+                std::cerr << "エラー: WPFアプリケーション(" << host << ":" << port << ")への接続がタイムアウトまたは失敗しました。" << std::endl;
+                close(sock);
+                return;
+            }
+        } else {
+            // EINPROGRESS以外の即時エラー
+            std::cerr << "エラー: WPFアプリケーション(" << host << ":" << port << ")に接続できませんでした。 " 
+                      << strerror(errno) << std::endl;
+            close(sock);
+            return;
+        }
+    }
+    // ret == 0 の場合、即座に接続が完了した
+
     std::cout << "WPFアプリケーションに接続しました。設定を送信します...\n";
     std::string config_str = serialize_config();
     
-    // 全てのデータが送信されるまでループする
     ssize_t total_sent = 0;
     const char* data_ptr = config_str.c_str();
     size_t data_len = config_str.length();
