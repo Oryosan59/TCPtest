@@ -54,27 +54,25 @@ bool load_config(const std::string& filename) {
     std::lock_guard<std::mutex> lock(g_config_mutex);
     g_config_data.clear();
 
-    int nsec = iniparser_getnsec(ini);
-    for (int i = 0; i < nsec; i++) {
-        const char* secname = iniparser_getsecname(ini, i);
-        if (secname == nullptr) continue;
-
-        std::string section(secname);
-        int nkeys = iniparser_getsecnkeys(ini, secname);
-        const char** keys = iniparser_getseckeys(ini, secname);
-
-        for (int j = 0; j < nkeys; j++) {
-            if (keys[j] == nullptr) continue;
-            
-            std::string full_key(keys[j]);
-            size_t colon_pos = full_key.find(':');
-            if (colon_pos == std::string::npos) continue;
-            
-            std::string key = full_key.substr(colon_pos + 1);
-            const char* value = iniparser_getstring(ini, keys[j], "");
-            
-            g_config_data[section][key] = std::string(value);
+    // 辞書内のすべてのキーを反復処理する
+    int n_keys = iniparser_getndict(ini);
+    for (int i = 0; i < n_keys; i++) {
+        const char* full_key = iniparser_getkey(ini, nullptr, i);
+        if (full_key == nullptr) {
+            continue;
         }
+
+        // iniparserはキーを "section:key" の形式で返すため、これを分割する
+        std::string full_key_str(full_key);
+        size_t colon_pos = full_key_str.find(':');
+        if (colon_pos == std::string::npos) {
+            continue; // セクションがないキーは無視
+        }
+
+        std::string section = full_key_str.substr(0, colon_pos);
+        std::string key = full_key_str.substr(colon_pos + 1);
+        const char* value = iniparser_getstring(ini, full_key, "");
+        g_config_data[section][key] = std::string(value);
     }
 
     iniparser_freedict(ini);
