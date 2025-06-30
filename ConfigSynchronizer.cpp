@@ -458,6 +458,39 @@ void receive_config_updates() {
 }
 
 /**
+ * @brief 既存のソケットを通じて現在の設定を送信する
+ * @param sock 既に接続済みのクライアントソケット
+ */
+void send_config_on_existing_socket(int sock) {
+    std::string config_str = serialize_config();
+    
+    ssize_t total_sent = 0;
+    const char* data_ptr = config_str.c_str();
+    size_t data_len = config_str.length();
+
+    // handle_client_connectionではノンブロッキングに設定していないため、sendはブロックするはず
+    while (total_sent < (ssize_t)data_len && !g_shutdown_flag.load()) {
+        ssize_t bytes_sent = send(sock, data_ptr + total_sent, data_len - total_sent, 0);
+        if (bytes_sent < 0) {
+            // EAGAIN/EWOULDBLOCKはブロッキングソケットでは通常発生しないが、念のため
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                continue;
+            }
+            std::cerr << "エラー: 設定の返信に失敗しました。 " << strerror(errno) << std::endl;
+            return;
+        }
+        total_sent += bytes_sent;
+    }
+
+    if (g_shutdown_flag.load()) {
+        std::cout << "設定の返信がキャンセルされました。\n";
+    } else {
+        std::cout << "設定を返信しました（" << total_sent << " バイト）\n";
+    }
+}
+
+/**
  * @brief クライアントからの接続を処理し、完全なメッセージを受信する (改良版)
  * @param client_sock クライアントのソケットディスクリプタ
  */
@@ -498,6 +531,14 @@ void handle_client_connection(int client_sock) {
         // 2. メッセージ長をパースし、その長さのデータを受信する
         size_t expected_length = std::stoull(header);
         
+        // 0バイトデータは「設定要求」として扱う
+        if (expected_length == 0) {
+            std::cout << "\nWPFから設定要求（0バイト）を受信しました。現在の設定を返信します。\n";
+            send_config_on_existing_socket(client_sock);
+            close(client_sock);
+            return;
+        }
+
         // 異常に大きなメッセージサイズを防ぐ
         const size_t MAX_MESSAGE_SIZE = 1024 * 1024; // 1MB
         if (expected_length > MAX_MESSAGE_SIZE) {
