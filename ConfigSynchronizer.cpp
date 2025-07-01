@@ -362,6 +362,7 @@ void send_config_to_wpf() {
  * @brief WPFからの設定更新を待ち受けるサーバーとして動作する (別スレッドで実行)
  */
 void handle_client_connection(int client_sock, const std::string& config_path); // プロトタイプ宣言
+void save_config(const std::string& filename); // プロトタイプ宣言を追加
 
 void receive_config_updates(const std::string& config_path) {
     std::string port_str = get_config_value("CONFIG_SYNC", "CPP_RECV_PORT", "12348");
