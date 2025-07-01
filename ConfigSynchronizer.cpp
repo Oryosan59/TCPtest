@@ -361,11 +361,11 @@ void send_config_to_wpf() {
 /**
  * @brief WPFからの設定更新を待ち受けるサーバーとして動作する (別スレッドで実行)
  */
-void handle_client_connection(int client_sock); // プロトタイプ宣言
+void handle_client_connection(int client_sock, const std::string& config_path); // プロトタイプ宣言
 
-void receive_config_updates() {
+void receive_config_updates(const std::string& config_path) {
     std::string port_str = get_config_value("CONFIG_SYNC", "CPP_RECV_PORT", "12348");
-    
+
     int port;
     try {
         port = std::stoi(port_str);
@@ -449,7 +449,7 @@ void receive_config_updates() {
             std::cout << "クライアント " << client_ip << ":" << ntohs(client_addr.sin_port) << " から接続を受信しました。\n";
 
             // 接続処理を別関数に委譲
-            handle_client_connection(client_sock);
+            handle_client_connection(client_sock, config_path);
         }
     }
 
@@ -494,7 +494,7 @@ void send_config_on_existing_socket(int sock) {
  * @brief クライアントからの接続を処理し、完全なメッセージを受信する (改良版)
  * @param client_sock クライアントのソケットディスクリプタ
  */
-void handle_client_connection(int client_sock) {
+void handle_client_connection(int client_sock, const std::string& config_path) {
     // クライアントソケットにもタイムアウトを設定
     struct timeval timeout;
     timeout.tv_sec = 10;  // 受信用は少し長めに設定
@@ -574,6 +574,7 @@ void handle_client_connection(int client_sock) {
         if (!g_shutdown_flag.load()) {
             std::cout << "\nWPFから設定データを受信しました（" << total_received << " バイト）\n";
             update_config_from_string(received_data);
+            save_config(config_path); // ★変更点: 受信後すぐにファイルに保存
         }
         
     } catch (const std::exception& e) {
@@ -701,7 +702,7 @@ int main(int argc, char* argv[]) {
     print_config_stats();
 
     // WPFからの設定更新を待ち受けるスレッドを開始
-    std::thread receiver_thread(receive_config_updates);
+    std::thread receiver_thread(receive_config_updates, config_path);
 
     // 少し待ってから、最初の設定をWPFに送信
     std::this_thread::sleep_for(std::chrono::seconds(1));
